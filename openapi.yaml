@@ -1,8 +1,8 @@
 openapi: 3.0.0
 info:
   title: Work Manager API
-  version: 1.0.0
-  description: Dify 用于管理用户工作事项的外部API服务
+  version: 1.1.0
+  description: Dify 用于管理用户工作事项的智能外部API服务，支持自然语言查询和智能解析
 servers:
   - url: http://localhost:8000
     description: 本地开发环境
@@ -214,6 +214,83 @@ paths:
                 properties:
                   message:
                     type: string
+                  error:
+                    type: boolean
+                    default: false
+
+  /smart_query_work_items:
+    post:
+      summary: 智能查询工作事项
+      description: 使用自然语言查询工作事项，系统自动解析查询意图并返回相关结果
+      operationId: smart_query_work_items
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_input:
+                  type: string
+                  description: 用户的自然语言查询，如"最近有什么任务"、"今天的会议"、"进行中的工作"等
+                  example: "最近有什么任务"
+              required: [user_input]
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    description: 响应消息
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          description: 工作事项的唯一ID
+                        type:
+                          type: string
+                          enum: [task, meeting, issue, idea, note, other]
+                          description: 工作事项类型
+                        summary:
+                          type: string
+                          description: 工作事项摘要
+                        project_name:
+                          type: string
+                          nullable: true
+                          description: 项目名称
+                        due_date:
+                          type: string
+                          format: date
+                          nullable: true
+                          description: 截止日期
+                        status:
+                          type: string
+                          enum: [todo, in_progress, completed, resolved, cancelled]
+                          nullable: true
+                          description: 状态
+                        priority:
+                          type: integer
+                          minimum: 1
+                          maximum: 5
+                          nullable: true
+                          description: 优先级
+                        created_at:
+                          type: string
+                          format: date-time
+                          nullable: true
+                          description: 创建时间
+                        updated_at:
+                          type: string
+                          format: date-time
+                          nullable: true
+                          description: 更新时间
                   error:
                     type: boolean
                     default: false
