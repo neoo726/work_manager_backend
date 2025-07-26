@@ -43,8 +43,11 @@ def get_date_range(time_range: str) -> Tuple[Optional[date], Optional[date]]:
             next_month = today.replace(month=today.month + 1, day=1)
         end_of_month = next_month - timedelta(days=1)
         return start_of_month, end_of_month
-    elif time_range == TimeRange.RECENT or time_range == TimeRange.PAST_WEEK:
-        # 最近一周：过去7天到今天
+    elif time_range == TimeRange.RECENT:
+        # 最近：过去2周到未来2周（总共4周范围）
+        return today - timedelta(days=14), today + timedelta(days=14)
+    elif time_range == TimeRange.PAST_WEEK:
+        # 过去一周：过去7天到今天
         return today - timedelta(days=7), today
     elif time_range == TimeRange.PAST_MONTH:
         # 过去一个月：过去30天到今天

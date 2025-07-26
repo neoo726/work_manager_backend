@@ -20,6 +20,7 @@ from models import (
     WorkItemResponse
 )
 from utils import get_date_range, get_user_id_from_request, validate_priority
+from text_parser import parse_user_query
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -101,7 +102,12 @@ async def smart_record_work_item(
     try:
         # 获取用户ID
         user_id = get_user_id_from_request(dict(http_request.headers))
-        
+
+        # 调试日志
+        logger.info(f"记录请求 - 用户ID: {user_id}")
+        logger.info(f"记录请求 - 请求头: {dict(http_request.headers)}")
+        logger.info(f"记录请求 - 请求内容: {request}")
+
         # 验证优先级
         if not validate_priority(request.priority):
             raise HTTPException(
@@ -162,6 +168,11 @@ async def query_work_items(
         # 获取用户ID
         user_id = get_user_id_from_request(dict(http_request.headers))
 
+        # 调试日志
+        logger.info(f"查询请求 - 用户ID: {user_id}")
+        logger.info(f"查询请求 - 请求头: {dict(http_request.headers)}")
+        logger.info(f"查询请求 - 查询参数: {request}")
+
         # 构建查询条件
         query_parts = ["user_id = %s"]
         query_params = [user_id]
@@ -190,12 +201,33 @@ async def query_work_items(
         # 处理时间范围
         if request.time_range:
             start_date, end_date = get_date_range(request.time_range.value)
-            if start_date and end_date:
-                query_parts.append("(due_date BETWEEN %s AND %s OR start_date BETWEEN %s AND %s)")
-                query_params.extend([start_date, end_date, start_date, end_date])
-            elif start_date:
-                query_parts.append("(due_date = %s OR start_date = %s)")
-                query_params.extend([start_date, start_date])
+
+            # 对于"最近"查询，使用混合时间逻辑：创建时间 + 截止日期 + 开始日期
+            if request.time_range.value == 'recent':
+                if start_date and end_date:
+                    # 最近：查找在时间范围内创建的，或者截止日期/开始日期在范围内的
+                    query_parts.append("""(
+                        DATE(created_at) BETWEEN %s AND %s OR
+                        due_date BETWEEN %s AND %s OR
+                        start_date BETWEEN %s AND %s
+                    )""")
+                    query_params.extend([start_date, end_date, start_date, end_date, start_date, end_date])
+            # 对于"过去"类查询，主要使用创建时间
+            elif request.time_range.value in ['past_week', 'past_month']:
+                if start_date and end_date:
+                    query_parts.append("DATE(created_at) BETWEEN %s AND %s")
+                    query_params.extend([start_date, end_date])
+                elif start_date:
+                    query_parts.append("DATE(created_at) = %s")
+                    query_params.append(start_date)
+            else:
+                # 对于其他时间范围，使用截止日期和开始日期
+                if start_date and end_date:
+                    query_parts.append("(due_date BETWEEN %s AND %s OR start_date BETWEEN %s AND %s)")
+                    query_params.extend([start_date, end_date, start_date, end_date])
+                elif start_date:
+                    query_parts.append("(due_date = %s OR start_date = %s)")
+                    query_params.extend([start_date, start_date])
 
         # 执行查询
         with db_manager.get_db_cursor() as cursor:
@@ -206,6 +238,10 @@ async def query_work_items(
             if query_parts:
                 query_str += " WHERE " + " AND ".join(query_parts)
             query_str += " ORDER BY due_date ASC, created_at DESC LIMIT 20"
+
+            # 调试SQL查询
+            logger.info(f"执行SQL: {query_str}")
+            logger.info(f"查询参数: {tuple(query_params)}")
 
             cursor.execute(query_str, tuple(query_params))
             rows = cursor.fetchall()
@@ -246,6 +282,81 @@ async def query_work_items(
         raise HTTPException(
             status_code=500,
             detail=f"查询工作事项失败: {str(e)}"
+        )
+
+
+@app.post("/smart_query_work_items", response_model=ApiResponse)
+async def smart_query_work_items(
+    request: dict,
+    http_request: Request,
+    db_manager: DatabaseManager = Depends(get_db_manager)
+):
+    """智能查询工作事项 - 支持自然语言输入"""
+    try:
+        # 获取用户输入
+        user_input = request.get('user_input', '')
+        if not user_input:
+            raise HTTPException(
+                status_code=400,
+                detail="请提供查询内容"
+            )
+
+        # 获取用户ID
+        user_id = get_user_id_from_request(dict(http_request.headers))
+
+        # 调试日志
+        logger.info(f"智能查询 - 用户ID: {user_id}")
+        logger.info(f"智能查询 - 用户输入: {user_input}")
+
+        # 解析用户输入
+        parsed_query = parse_user_query(user_input)
+        logger.info(f"智能查询 - 解析结果: {parsed_query}")
+
+        # 构建查询请求
+        from models import QueryWorkItemsRequest, TimeRange, ItemType, ItemStatus
+
+        query_request = QueryWorkItemsRequest()
+
+        # 设置时间范围
+        if parsed_query['time_range']:
+            try:
+                query_request.time_range = TimeRange(parsed_query['time_range'])
+            except ValueError:
+                pass
+
+        # 设置事项类型
+        if parsed_query['item_type']:
+            try:
+                query_request.item_type = ItemType(parsed_query['item_type'])
+            except ValueError:
+                pass
+
+        # 设置状态
+        if parsed_query['status']:
+            try:
+                query_request.status = ItemStatus(parsed_query['status'])
+            except ValueError:
+                pass
+
+        # 设置关键词
+        if parsed_query['keyword']:
+            query_request.keyword = parsed_query['keyword']
+
+        # 如果没有解析到任何条件，使用原始输入作为关键词
+        if not any([query_request.time_range, query_request.item_type,
+                   query_request.status, query_request.keyword]):
+            query_request.keyword = user_input
+
+        # 调用标准查询接口
+        return await query_work_items(query_request, http_request, db_manager)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"智能查询失败: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"智能查询失败: {str(e)}"
         )
 
 
