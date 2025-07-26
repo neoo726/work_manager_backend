@@ -1,0 +1,521 @@
+我完全理解你的感受！Dify 插件开发确实比你想象的要复杂，尤其是当 SDK 版本频繁更新导致文档和代码不一致时，会让人感到非常沮丧。
+
+你的想法非常明智：**直接利用 Dify 现有节点和后端服务通信，来完成工作，这绝对是可行的，而且在很多情况下会是更简单、更稳定的方案！**
+
+让我们来详细探讨这个方案。
+
+### 方案二：利用 Dify 的 "HTTP 请求" 节点 + 外部后端服务
+
+这个方案的核心思想是：
+
+1.  **Dify 负责 AI 编排和接口：** Dify 的 LLM 负责理解用户意图，然后调用一个\*\*“HTTP 请求”工具\*\*（而不是你开发的自定义插件）。
+2.  **你的服务负责核心逻辑：** 你需要自己编写一个独立的后端服务（比如用 Python Flask/FastAPI，或者 Node.js Express 等），这个服务负责：
+      * 接收 Dify 发来的 HTTP 请求。
+      * 解析请求中的参数（例如，要记录什么事项、查询什么事项）。
+      * 执行你的业务逻辑（与 PostgreSQL 数据库交互）。
+      * 将结果通过 HTTP 响应返回给 Dify。
+
+**这个方案的优势：**
+
+  * **完全解耦：** 你的业务逻辑与 Dify 平台完全分离，互不影响。Dify 升级不会影响你的服务，你的服务逻辑更新也不需要重新部署 Dify 插件。
+  * **开发调试简单：** 你可以使用任何你熟悉的后端开发框架（Flask, FastAPI, Spring Boot, Express.js 等），用你习惯的方式进行本地开发和调试，无需面对 Dify 插件沙箱和远程调试的复杂性。
+  * **部署灵活：** 你的后端服务可以部署在任何地方（你自己的服务器、各种云服务如阿里云、腾讯云、Vercel、Render 等），只要 Dify 能够访问到它的公开地址。
+  * **更强大的控制力：** 你可以更自由地管理认证、日志、监控等后端服务的细节。
+  * **减少 Dify 依赖：** 降低了对 Dify 插件 SDK 频繁更新的依赖。
+
+**这个方案的劣势：**
+
+  * **需要独立部署：** 你需要额外管理一个后端服务的部署。
+  * **网络访问要求：** 你的后端服务需要有**公网 IP 或可被 Dify 访问的地址**。
+
+### 方案二：实现步骤详解
+
+#### 阶段一：搭建你的独立后端服务
+
+1.  **选择后端框架：** 推荐使用 Python 的 **FastAPI** 或 **Flask**，它们轻量且易于上手。这里以 FastAPI 为例。
+
+      * **安装依赖：**
+        ```bash
+        pip install fastapi uvicorn psycopg2-binary python-dotenv
+        ```
+
+2.  **编写后端服务代码 (`backend_service.py`):**
+
+    ```python
+    # backend_service.py
+    from fastapi import FastAPI, HTTPException
+    from pydantic import BaseModel, Field
+    import os
+    import json
+    import psycopg2
+    from datetime import date, datetime, timedelta
+    from typing import List, Optional
+
+    # --- 数据库连接配置 (与之前插件代码类似，但现在从 FastAPI 启动时加载) ---
+    # 实际部署时，这些变量应来自环境变量或安全配置服务
+    DB_HOST = os.getenv("DB_HOST", "localhost")
+    DB_NAME = os.getenv("DB_NAME", "your_db_name") # 替换为你的数据库名
+    DB_USER = os.getenv("DB_USER", "your_user") # 替换为你的数据库用户名
+    DB_PASSWORD = os.getenv("DB_PASSWORD", "your_password") # 替换为你的数据库密码
+    DB_PORT = os.getenv("DB_PORT", "5432")
+
+    def get_db_connection():
+        try:
+            conn = psycopg2.connect(
+                host=DB_HOST,
+                database=DB_NAME,
+                user=DB_USER,
+                password=DB_PASSWORD,
+                port=DB_PORT
+            )
+            return conn
+        except Exception as e:
+            print(f"数据库连接失败: {e}")
+            raise HTTPException(status_code=500, detail=f"数据库连接失败: {e}")
+
+    # --- FastAPI 应用实例 ---
+    app = FastAPI(
+        title="Work Assistant Backend Service",
+        description="为 Dify 提供工作事项管理功能的后端服务。",
+        version="1.0.0"
+    )
+
+    # --- Pydantic 模型定义 (用于请求体和响应体的数据校验和文档生成) ---
+    class SmartRecordWorkItemRequest(BaseModel):
+        user_input: str
+        item_type: str = Field(..., description="工作事项的类型，例如 'task' (任务), 'meeting' (会议), 'issue' (问题), 'idea' (想法), 'note' (笔记), 'other' (其他)。")
+        summary: str
+        project_name: Optional[str] = None
+        due_date: Optional[date] = None # 使用 date 类型，FastAPI 会自动解析
+        start_date: Optional[date] = None
+        status: Optional[str] = None
+        priority: Optional[int] = None
+        tags: Optional[List[str]] = None
+
+    class QueryWorkItemsRequest(BaseModel):
+        time_range: Optional[str] = Field(None, enum=["today", "tomorrow", "this_week", "next_week", "this_month", "recent", "past_week", "past_month", "all"])
+        project_name: Optional[str] = None
+        item_type: Optional[str] = Field(None, enum=["task", "meeting", "issue", "idea", "note", "other"])
+        status: Optional[str] = Field(None, enum=["todo", "in_progress", "completed", "resolved", "cancelled"])
+        keyword: Optional[str] = None
+        item_id: Optional[str] = None
+
+    class UpdateWorkItemRequest(BaseModel):
+        user_input: str
+        item_id: Optional[str] = None
+        keyword: Optional[str] = None
+        time_context: Optional[str] = Field(None, description="当item_id和keyword都不足时，提供时间上下文，例如 'today', 'this_week', 'tomorrow'。")
+        new_status: Optional[str] = Field(None, enum=["todo", "in_progress", "completed", "resolved", "cancelled"])
+        new_due_date: Optional[date] = None
+        new_priority: Optional[int] = None
+        new_summary: Optional[str] = None
+        new_content: Optional[str] = None
+
+    # --- 辅助函数：根据时间范围计算日期 (与之前相同) ---
+    def get_date_range(time_range: str):
+        today = date.today()
+        if time_range == 'today':
+            return today, today
+        elif time_range == 'tomorrow':
+            tomorrow = today + timedelta(days=1)
+            return tomorrow, tomorrow
+        elif time_range == 'this_week':
+            start_of_week = today - timedelta(days=today.weekday())
+            end_of_week = start_of_week + timedelta(days=6)
+            return start_of_week, end_of_week
+        elif time_range == 'next_week':
+            start_of_next_week = today + timedelta(days=7 - today.weekday())
+            end_of_next_week = start_of_next_week + timedelta(days=6)
+            return start_of_next_week, end_of_next_week
+        elif time_range == 'this_month':
+            start_of_month = today.replace(day=1)
+            next_month = today.replace(day=28) + timedelta(days=4)
+            end_of_month = next_month - timedelta(days=next_month.day)
+            return start_of_month, end_of_month
+        elif time_range == 'recent' or time_range == 'past_week':
+            return today - timedelta(days=7), today
+        elif time_range == 'past_month':
+            return today - timedelta(days=30), today
+        elif time_range == 'all':
+            return None, None
+        return None, None
+
+    # --- FastAPI 路由（即你的 API 端点） ---
+
+    @app.post("/smart_record_work_item")
+    async def smart_record_work_item_api(request: SmartRecordWorkItemRequest):
+        conn = None
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+
+            # ⚠️ 用户ID：Dify 会通过 HTTP Headers 或请求体传递一些上下文信息。
+            # 你需要查阅 Dify 的 Webhook/HTTP 请求工具的文档，了解如何获取用户ID。
+            # 暂时使用一个默认值或从 Header 中获取 (例如 X-Dify-User-ID)
+            user_id = "dify_http_user" # 替换为从请求中获取用户ID的逻辑
+
+            sql = """
+            INSERT INTO work_items (user_id, type, content, summary, project_name, due_date, start_date, status, priority, tags, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW()) RETURNING id;
+            """
+            cur.execute(sql, (
+                user_id, request.item_type, request.user_input, request.summary, request.project_name,
+                request.due_date, request.start_date, request.status, request.priority,
+                json.dumps(request.tags) if request.tags else None
+            ))
+            item_id = cur.fetchone()[0]
+            conn.commit()
+            cur.close()
+            conn.close()
+            return {"message": f"工作事项 '{request.summary}' 已成功记录，ID: {item_id}。", "error": False}
+        except Exception as e:
+            if conn: conn.close()
+            raise HTTPException(status_code=500, detail=f"记录工作事项失败：{str(e)}")
+
+    @app.post("/query_work_items")
+    async def query_work_items_api(request: QueryWorkItemsRequest):
+        conn = None
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+
+            user_id = "dify_http_user" # 替换为从请求中获取用户ID的逻辑
+            query_parts = ["user_id = %s"]
+            query_params = [user_id]
+
+            if request.item_id:
+                query_parts.append("id = %s")
+                query_params.append(request.item_id)
+            if request.project_name:
+                query_parts.append("project_name ILIKE %s")
+                query_params.append(f"%{request.project_name}%")
+            if request.item_type:
+                query_parts.append("type = %s")
+                query_params.append(request.item_type)
+            if request.status:
+                query_parts.append("status = %s")
+                query_params.append(request.status)
+            if request.keyword:
+                query_parts.append("(summary ILIKE %s OR content ILIKE %s)")
+                query_params.extend([f"%{request.keyword}%", f"%{request.keyword}%"])
+
+            start_date_obj, end_date_obj = get_date_range(request.time_range)
+            if start_date_obj and end_date_obj:
+                query_parts.append("(due_date BETWEEN %s AND %s OR start_date BETWEEN %s AND %s)")
+                query_params.extend([start_date_obj, end_date_obj, start_date_obj, end_date_obj])
+            elif start_date_obj:
+                query_parts.append("(due_date = %s OR start_date = %s)")
+                query_params.extend([start_date_obj, start_date_obj])
+
+            query_str = "SELECT id, type, summary, project_name, due_date, status FROM work_items"
+            if query_parts:
+                query_str += " WHERE " + " AND ".join(query_parts)
+            query_str += " ORDER BY due_date ASC, created_at DESC LIMIT 20"
+
+            cur.execute(query_str, tuple(query_params))
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+
+            result_list = []
+            for row in rows:
+                result_list.append({
+                    "id": str(row[0]),
+                    "type": row[1],
+                    "summary": row[2],
+                    "project_name": row[3],
+                    "due_date": str(row[4]) if row[4] else None,
+                    "status": row[5]
+                })
+
+            if not result_list:
+                return {"message": "没有找到符合条件的工作事项。", "data": [], "error": False}
+
+            return {"message": "查询成功。", "data": result_list, "error": False}
+
+        except Exception as e:
+            if conn: conn.close()
+            raise HTTPException(status_code=500, detail=f"查询工作事项失败：{str(e)}")
+
+    @app.post("/update_work_item")
+    async def update_work_item_api(request: UpdateWorkItemRequest):
+        conn = None
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+
+            user_id = "dify_http_user" # 替换为从请求中获取用户ID的逻辑
+            target_item_id = request.item_id
+
+            if not target_item_id:
+                # 模糊匹配逻辑，这里可以调用 /query_work_items 逻辑，或实现自己的匹配
+                matching_items_result = await query_work_items_api(
+                    QueryWorkItemsRequest(
+                        keyword=request.keyword,
+                        time_range=request.time_context
+                    )
+                )
+                if matching_items_result.get("data") and len(matching_items_result["data"]) == 1:
+                    target_item_id = matching_items_result["data"][0]["id"]
+                elif matching_items_result.get("data") and len(matching_items_result["data"]) > 1:
+                    item_summaries = ", ".join([item["summary"] for item in matching_items_result["data"]])
+                    raise HTTPException(status_code=400, detail=f"找到了多个符合条件的工作事项，请提供更具体的描述或ID来指定：{item_summaries}")
+                else:
+                    raise HTTPException(status_code=404, detail="未能找到符合条件的工作事项进行更新。")
+
+            update_parts = []
+            update_params = []
+            if request.new_status:
+                update_parts.append("status = %s")
+                update_params.append(request.new_status)
+            if request.new_due_date:
+                update_parts.append("due_date = %s")
+                update_params.append(request.new_due_date)
+            if request.new_priority is not None:
+                update_parts.append("priority = %s")
+                update_params.append(request.new_priority)
+            if request.new_summary:
+                update_parts.append("summary = %s")
+                update_params.append(request.new_summary)
+            if request.new_content:
+                update_parts.append("content = %s")
+                update_params.append(request.new_content)
+            
+            if not update_parts:
+                return {"message": "没有提供更新内容。", "error": False}
+
+            update_parts.append("updated_at = NOW()")
+
+            sql = f"UPDATE work_items SET {', '.join(update_parts)} WHERE id = %s AND user_id = %s"
+            update_params.extend([target_item_id, user_id])
+
+            cur.execute(sql, tuple(update_params))
+
+            if cur.rowcount == 0:
+                conn.rollback()
+                raise HTTPException(status_code=404, detail=f"未能找到ID为 {target_item_id} 的工作事项或无权更新。")
+
+            conn.commit()
+            cur.close()
+            conn.close()
+            return {"message": f"工作事项 {target_item_id} 已成功更新。", "error": False}
+
+        except HTTPException as e: # 捕获 HTTPException 直接抛出
+            raise e
+        except Exception as e:
+            if conn: conn.close()
+            raise HTTPException(status_code=500, detail=f"更新工作事项失败：{str(e)}")
+
+    # 如果需要，可以在这里添加健康检查路由
+    @app.get("/health")
+    async def health_check():
+        try:
+            conn = get_db_connection()
+            conn.close()
+            return {"status": "ok", "message": "Database connection successful."}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Database connection failed: {e}")
+
+    # 主程序入口，用于本地运行和调试
+    if __name__ == "__main__":
+        import uvicorn
+        from dotenv import load_dotenv
+        load_dotenv() # 加载 .env 文件中的环境变量
+
+        # 从 .env 加载数据库配置
+        DB_HOST = os.getenv("DB_HOST", "localhost")
+        DB_NAME = os.getenv("DB_NAME", "your_db_name")
+        DB_USER = os.getenv("DB_USER", "your_user")
+        DB_PASSWORD = os.getenv("DB_PASSWORD", "your_password")
+        DB_PORT = os.getenv("DB_PORT", "5432")
+
+        uvicorn.run(app, host="0.0.0.0", port=8000) # 监听所有网络接口的 8000 端口
+    ```
+
+#### 3\. 本地运行后端服务
+
+在包含 `backend_service.py` 的目录下，打开终端并运行：
+
+```bash
+uvicorn backend_service:app --reload --host 0.0.0.0 --port 8000
+```
+
+  * `backend_service:app` 指的是 `backend_service.py` 文件中的 `app` 对象。
+  * `--reload` (可选) 会在文件修改时自动重启服务，方便开发。
+  * `--host 0.0.0.0` 使得服务可以从外部网络访问（如果你在 Docker 或虚拟机中运行）。
+  * `--port 8000` 指定监听端口。
+
+服务启动后，你应该能在浏览器中访问 `http://localhost:8000/docs` (如果本地运行) 或 `http://你的服务器IP:8000/docs`，看到 FastAPI 自动生成的 API 文档，这证明你的后端服务已成功运行。
+
+#### 阶段二：配置 Dify 的 "HTTP 请求" 工具
+
+1.  **登录 Dify，进入“工具”页面：**
+    在 Dify 左侧导航栏找到 **“工具 (Tools)”**。
+
+2.  **创建“新工具”：**
+    点击右上角的 **“创建新工具 (Create New Tool)”**。
+
+3.  **选择 “HTTP 请求 (HTTP Request)”：**
+    在弹出的工具类型中，选择 **“HTTP 请求”**。
+
+4.  **配置 HTTP 请求工具的 OpenAPI 规范：**
+    这是最关键的一步。你需要用 OpenAPI (以前叫 Swagger) 规范来描述你的后端服务提供的三个接口。Dify 的 LLM 会根据这个规范来理解何时调用哪个接口以及传递什么参数。
+
+    点击 **“手动输入 (Manually enter)”** 或 **“导入 JSON/YAML”**，然后粘贴以下 YAML 内容：
+
+    ```yaml
+    openapi: 3.0.0
+    info:
+      title: Work Assistant API
+      version: 1.0.0
+      description: Dify 用于管理用户工作事项的外部API服务。
+    servers:
+      - url: http://YOUR_SERVICE_PUBLIC_IP_OR_DOMAIN:8000 # <-- 替换为你的后端服务的公网可访问地址和端口！
+        description: 生产环境后端服务
+
+    paths:
+      /smart_record_work_item:
+        post:
+          summary: 智能记录工作事项
+          description: 根据用户口述，智能解析并记录新的工作事项（任务、会议、问题、想法、笔记）。
+          operationId: smart_record_work_item # 这是 LLM 将调用的函数名
+          requestBody:
+            required: true
+            content:
+              application/json:
+                schema:
+                  type: object
+                  properties:
+                    user_input: {type: string, description: 用户输入的原始文本信息，用于AI进行二次理解和上下文关联。}
+                    item_type: {type: string, enum: [task, meeting, issue, idea, note, other], description: 工作事项的类型，例如 'task' (任务), 'meeting' (会议), 'issue' (问题), 'idea' (想法), 'note' (笔记), 'other' (其他)。}
+                    summary: {type: string, description: 由AI提炼出的工作事项的简要摘要或标题。}
+                    project_name: {type: string, nullable: true, description: 此工作事项所属的项目名称，如果存在的话。}
+                    due_date: {type: string, format: date, nullable: true, description: 此工作事项的截止日期，格式为 YYYY-MM-DD。}
+                    start_date: {type: string, format: date, nullable: true, description: 此工作事项的开始日期，格式为 YYYY-MM-DD。}
+                    status: {type: string, enum: [todo, in_progress, completed, resolved, cancelled], nullable: true, description: 此工作事项的当前状态。}
+                    priority: {type: integer, minimum: 1, maximum: 5, nullable: true, description: 工作事项的优先级，1为最高，5为最低。}
+                    tags: {type: array, items: {type: string}, nullable: true, description: 相关的关键词或标签列表。}
+                  required: [user_input, item_type, summary]
+          responses:
+            '200':
+              description: 成功记录工作事项
+              content:
+                application/json:
+                  schema:
+                    type: object
+                    properties:
+                      message: {type: string}
+                      error: {type: boolean, default: false}
+
+      /query_work_items:
+        post:
+          summary: 查询工作事项
+          description: 根据条件查询并总结我的工作记忆数据库中的相关信息。
+          operationId: query_work_items # 这是 LLM 将调用的函数名
+          requestBody:
+            required: true
+            content:
+              application/json:
+                schema:
+                  type: object
+                  properties:
+                    time_range: {type: string, enum: [today, tomorrow, this_week, next_week, this_month, recent, past_week, past_month, all], nullable: true, description: 查询的时间范围。}
+                    project_name: {type: string, nullable: true, description: 要查询的项目名称。}
+                    item_type: {type: string, enum: [task, meeting, issue, idea, note, other], nullable: true, description: 要查询的工作事项类型。}
+                    status: {type: string, enum: [todo, in_progress, completed, resolved, cancelled], nullable: true, description: 要查询的工作事项状态。}
+                    keyword: {type: string, nullable: true, description: 用于模糊匹配事项标题或内容的关键词。}
+                    item_id: {type: string, nullable: true, description: 如果已知，直接查询特定事项的ID。}
+          responses:
+            '200':
+              description: 成功查询工作事项
+              content:
+                application/json:
+                  schema:
+                    type: object
+                    properties:
+                      message: {type: string}
+                      data:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id: {type: string}
+                            type: {type: string}
+                            summary: {type: string}
+                            project_name: {type: string, nullable: true}
+                            due_date: {type: string, format: date, nullable: true}
+                            status: {type: string, nullable: true}
+                      error: {type: boolean, default: false}
+
+      /update_work_item:
+        post:
+          summary: 更新工作事项
+          description: 更新现有事项的状态、截止日期、优先级、摘要或其他详细信息。
+          operationId: update_work_item # 这是 LLM 将调用的函数名
+          requestBody:
+            required: true
+            content:
+              application/json:
+                schema:
+                  type: object
+                  properties:
+                    user_input: {type: string, description: 用户原始指令，用于上下文理解。}
+                    item_id: {type: string, nullable: true, description: 要更新的工作事项的唯一ID。}
+                    keyword: {type: string, nullable: true, description: 用于模糊匹配事项的关键词，当item_id未提供时使用。}
+                    time_context: {type: string, nullable: true, description: 当item_id和keyword都不足时，提供时间上下文。}
+                    new_status: {type: string, enum: [todo, in_progress, completed, resolved, cancelled], nullable: true, description: 更新后的状态。}
+                    new_due_date: {type: string, format: date, nullable: true, description: 更新后的截止日期。}
+                    new_priority: {type: integer, minimum: 1, maximum: 5, nullable: true, description: 更新后的优先级。}
+                    new_summary: {type: string, nullable: true, description: 更新后的摘要或标题。}
+                    new_content: {type: string, nullable: true, description: 更新后的详细内容。}
+                  required: [user_input]
+          responses:
+            '200':
+              description: 成功更新工作事项
+              content:
+                application/json:
+                  schema:
+                    type: object
+                    properties:
+                      message: {type: string}
+                      error: {type: boolean, default: false}
+    ```
+
+    **重要提示：** 将 `http://YOUR_SERVICE_PUBLIC_IP_OR_DOMAIN:8000` 替换为你的后端服务实际可从公网访问的 URL 和端口。在本地调试时，如果你使用 `ngrok` 或类似工具，这里填 `ngrok` 生成的 HTTPS 地址。
+
+5.  **保存并启用工具：**
+    Dify 会验证你的 OpenAPI 规范。如果通过，你就可以保存这个工具。
+
+#### 阶段三：在 Dify 应用中使用工具
+
+1.  **进入你的 Dify 应用（Chatflow 或 Agent）：**
+    例如，如果你有一个聊天应用，进入该应用的“编排”页面。
+
+2.  **编辑 LLM 节点：**
+    点击你的 LLM 节点（通常是 `Chat` 或 `Agent` 节点）。
+
+3.  **启用并选择你的工具：**
+    在 LLM 节点的配置侧边栏中，找到 **“工具 (Tools)”** 部分。启用它，然后从列表中选择你刚刚创建的 **“Work Assistant API”** 工具。
+
+4.  **保存并测试：**
+    保存你的 Dify 应用配置。现在，你可以在 Dify 的“调试与预览”界面中测试你的应用了。
+
+      * 输入：“帮我记录一个任务，下周三要完成Dify插件的测试，项目是AI助手。”
+      * Dify 的 LLM 会识别到要调用 `smart_record_work_item` 工具，并向你的后端服务发送 HTTP 请求。
+      * 你的后端服务会处理请求，与数据库交互，并返回结果给 Dify。
+      * Dify 会将结果呈现给用户。
+
+### 部署你的后端服务
+
+为了让 Dify 能够持续访问你的服务，你需要将 `backend_service.py` 部署到一个可以公开访问的服务器上。
+
+  * **小型测试：** 使用 `ngrok` (或其他内网穿透工具) 将你本地运行的 8000 端口映射到公网，但 `ngrok` 会给一个随机 URL 且免费版会过期。
+  * **云服务器：** 将 `backend_service.py` 和 `requirements.txt` 部署到阿里云、腾讯云、Vultr、DigitalOcean 等 VPS。你需要安装 Python、`pip install -r requirements.txt`，然后用 `gunicorn` 或 `Supervisor` 等工具管理 `uvicorn` 进程。
+  * **Serverless 平台：** 考虑使用如 Vercel (如果你的后端逻辑能适配其 Serverless Functions)、Render、Fly.io、Railway.app 等平台，它们可以简化部署和管理。
+  * **Docker：** 将你的服务打包成 Docker 镜像，然后部署到任何支持 Docker 的环境。
+
+**总结：**
+
+选择“HTTP 请求”工具的方案，是将 Dify 作为 AI 编排层，而将你的业务逻辑放在一个独立的、由你完全掌控的后端服务中。这大大降低了 Dify 插件本身的开发和维护复杂性，让你专注于核心业务逻辑，同时享受 Dify 强大的 AI 能力。
+
+如果你觉得这个方案更符合你的需求，我们可以继续深入讲解部署的细节，或者你先尝试搭建这个 FastAPI 服务并在本地运行。
