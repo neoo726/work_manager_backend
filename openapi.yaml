@@ -1,0 +1,240 @@
+openapi: 3.0.0
+info:
+  title: Work Manager API
+  version: 1.0.0
+  description: Dify 用于管理用户工作事项的外部API服务
+servers:
+  - url: http://localhost:8000
+    description: 本地开发环境
+  - url: https://your-domain.com
+    description: 生产环境（请替换为实际域名）
+
+paths:
+  /smart_record_work_item:
+    post:
+      summary: 智能记录工作事项
+      description: 根据用户口述，智能解析并记录新的工作事项（任务、会议、问题、想法、笔记）
+      operationId: smart_record_work_item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_input:
+                  type: string
+                  description: 用户输入的原始文本信息，用于AI进行二次理解和上下文关联
+                item_type:
+                  type: string
+                  enum: [task, meeting, issue, idea, note, other]
+                  description: 工作事项的类型
+                summary:
+                  type: string
+                  description: 由AI提炼出的工作事项的简要摘要或标题
+                project_name:
+                  type: string
+                  nullable: true
+                  description: 此工作事项所属的项目名称，如果存在的话
+                due_date:
+                  type: string
+                  format: date
+                  nullable: true
+                  description: 此工作事项的截止日期，格式为 YYYY-MM-DD
+                start_date:
+                  type: string
+                  format: date
+                  nullable: true
+                  description: 此工作事项的开始日期，格式为 YYYY-MM-DD
+                status:
+                  type: string
+                  enum: [todo, in_progress, completed, resolved, cancelled]
+                  nullable: true
+                  description: 此工作事项的当前状态
+                priority:
+                  type: integer
+                  minimum: 1
+                  maximum: 5
+                  nullable: true
+                  description: 工作事项的优先级，1为最高，5为最低
+                tags:
+                  type: array
+                  items:
+                    type: string
+                  nullable: true
+                  description: 相关的关键词或标签列表
+              required: [user_input, item_type, summary]
+      responses:
+        '200':
+          description: 成功记录工作事项
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  error:
+                    type: boolean
+                    default: false
+
+  /query_work_items:
+    post:
+      summary: 查询工作事项
+      description: 根据条件查询并总结我的工作记忆数据库中的相关信息
+      operationId: query_work_items
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                time_range:
+                  type: string
+                  enum: [today, tomorrow, this_week, next_week, this_month, recent, past_week, past_month, all]
+                  nullable: true
+                  description: 查询的时间范围
+                project_name:
+                  type: string
+                  nullable: true
+                  description: 要查询的项目名称
+                item_type:
+                  type: string
+                  enum: [task, meeting, issue, idea, note, other]
+                  nullable: true
+                  description: 要查询的工作事项类型
+                status:
+                  type: string
+                  enum: [todo, in_progress, completed, resolved, cancelled]
+                  nullable: true
+                  description: 要查询的工作事项状态
+                keyword:
+                  type: string
+                  nullable: true
+                  description: 用于模糊匹配事项标题或内容的关键词
+                item_id:
+                  type: string
+                  nullable: true
+                  description: 如果已知，直接查询特定事项的ID
+      responses:
+        '200':
+          description: 成功查询工作事项
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        type:
+                          type: string
+                        summary:
+                          type: string
+                        project_name:
+                          type: string
+                          nullable: true
+                        due_date:
+                          type: string
+                          format: date
+                          nullable: true
+                        status:
+                          type: string
+                          nullable: true
+                  error:
+                    type: boolean
+                    default: false
+
+  /update_work_item:
+    post:
+      summary: 更新工作事项
+      description: 更新现有事项的状态、截止日期、优先级、摘要或其他详细信息
+      operationId: update_work_item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_input:
+                  type: string
+                  description: 用户原始指令，用于上下文理解
+                item_id:
+                  type: string
+                  nullable: true
+                  description: 要更新的工作事项的唯一ID
+                keyword:
+                  type: string
+                  nullable: true
+                  description: 用于模糊匹配事项的关键词，当item_id未提供时使用
+                time_context:
+                  type: string
+                  nullable: true
+                  description: 当item_id和keyword都不足时，提供时间上下文
+                new_status:
+                  type: string
+                  enum: [todo, in_progress, completed, resolved, cancelled]
+                  nullable: true
+                  description: 更新后的状态
+                new_due_date:
+                  type: string
+                  format: date
+                  nullable: true
+                  description: 更新后的截止日期
+                new_priority:
+                  type: integer
+                  minimum: 1
+                  maximum: 5
+                  nullable: true
+                  description: 更新后的优先级
+                new_summary:
+                  type: string
+                  nullable: true
+                  description: 更新后的摘要或标题
+                new_content:
+                  type: string
+                  nullable: true
+                  description: 更新后的详细内容
+              required: [user_input]
+      responses:
+        '200':
+          description: 成功更新工作事项
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  error:
+                    type: boolean
+                    default: false
+
+  /health:
+    get:
+      summary: 健康检查
+      description: 检查服务和数据库连接状态
+      operationId: health_check
+      responses:
+        '200':
+          description: 服务健康
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
