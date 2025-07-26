@@ -113,14 +113,12 @@ async def smart_record_work_item(
         with db_manager.get_db_cursor() as cursor:
             sql = """
             INSERT INTO work_items (
-                user_id, type, content, summary, project_name, 
-                due_date, start_date, status, priority, tags, 
-                created_at, updated_at
+                user_id, type, content, summary, project_name,
+                due_date, start_date, status, priority, tags
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW()) 
-            RETURNING id;
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
-            
+
             cursor.execute(sql, (
                 user_id,
                 request.item_type.value,
@@ -133,8 +131,9 @@ async def smart_record_work_item(
                 request.priority,
                 json.dumps(request.tags) if request.tags else None
             ))
-            
-            item_id = cursor.fetchone()[0]
+
+            # MySQL 使用 lastrowid 获取插入的ID
+            item_id = cursor.lastrowid
         
         logger.info(f"成功记录工作事项: {item_id}")
         return ApiResponse(
@@ -173,7 +172,7 @@ async def query_work_items(
             query_params.append(request.item_id)
 
         if request.project_name:
-            query_parts.append("project_name ILIKE %s")
+            query_parts.append("project_name LIKE %s")
             query_params.append(f"%{request.project_name}%")
 
         if request.item_type:
@@ -185,7 +184,7 @@ async def query_work_items(
             query_params.append(request.status.value)
 
         if request.keyword:
-            query_parts.append("(summary ILIKE %s OR content ILIKE %s)")
+            query_parts.append("(summary LIKE %s OR content LIKE %s)")
             query_params.extend([f"%{request.keyword}%", f"%{request.keyword}%"])
 
         # 处理时间范围

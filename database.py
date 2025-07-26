@@ -1,8 +1,7 @@
 """
 数据库连接和操作模块
 """
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import pymysql
 from contextlib import contextmanager
 from typing import Generator, Optional
 import logging
@@ -15,27 +14,29 @@ logger = logging.getLogger(__name__)
 
 class DatabaseManager:
     """数据库管理器"""
-    
+
     def __init__(self):
         self.connection_params = {
             'host': settings.db_host,
             'database': settings.db_name,
             'user': settings.db_user,
             'password': settings.db_password,
-            'port': settings.db_port
+            'port': settings.db_port,
+            'charset': 'utf8mb4',
+            'autocommit': False
         }
-    
+
     def get_connection(self):
         """获取数据库连接"""
         try:
-            conn = psycopg2.connect(**self.connection_params)
+            conn = pymysql.connect(**self.connection_params)
             return conn
-        except psycopg2.Error as e:
+        except pymysql.Error as e:
             logger.error(f"数据库连接失败: {e}")
             raise
     
     @contextmanager
-    def get_db_connection(self) -> Generator[psycopg2.extensions.connection, None, None]:
+    def get_db_connection(self) -> Generator[pymysql.Connection, None, None]:
         """获取数据库连接的上下文管理器"""
         conn = None
         try:
@@ -49,13 +50,13 @@ class DatabaseManager:
         finally:
             if conn:
                 conn.close()
-    
+
     @contextmanager
-    def get_db_cursor(self, dict_cursor: bool = True) -> Generator[psycopg2.extensions.cursor, None, None]:
+    def get_db_cursor(self, dict_cursor: bool = True) -> Generator[pymysql.cursors.Cursor, None, None]:
         """获取数据库游标的上下文管理器"""
         with self.get_db_connection() as conn:
-            cursor_factory = RealDictCursor if dict_cursor else None
-            cursor = conn.cursor(cursor_factory=cursor_factory)
+            cursor_class = pymysql.cursors.DictCursor if dict_cursor else pymysql.cursors.Cursor
+            cursor = conn.cursor(cursor_class)
             try:
                 yield cursor
                 conn.commit()
