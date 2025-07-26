@@ -143,7 +143,7 @@ async def smart_record_work_item(
         
         logger.info(f"成功记录工作事项: {item_id}")
         return ApiResponse(
-            message=f"工作事项 '{request.summary}' 已成功记录，ID: {item_id}",
+            message=f"好的，我已经帮您记录了「{request.summary}」",
             error=False
         )
 
