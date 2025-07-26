@@ -1,7 +1,7 @@
 openapi: 3.0.0
 info:
   title: Work Manager API
-  version: 1.1.0
+  version: 1.0.0
   description: Dify 用于管理用户工作事项的智能外部API服务，支持自然语言查询和智能解析
 servers:
   - url: http://localhost:8000
